@@ -1,0 +1,35 @@
+name: flow
+
+channels:
+  - conda-forge
+  - nvidia
+
+dependencies:
+  - python=3.12
+  - pip
+  - libstdcxx-ng
+  - cuda-toolkit=12.6
+  - numpy
+  - scipy
+  - scipy-stubs
+  - scikit-learn
+  - pandas
+  - pillow
+  - matplotlib
+  - pycocotools
+  - accelerate
+  - wandb
+  - hydra-core
+  - ipykernel
+  - ipywidgets
+  - ruff
+  - black
+  - pytest
+  - pre-commit
+  - nvtop
+  - htop
+  
+  - pip:
+    - torch==2.11.0+cu126
+    - torchvision==0.26.0+cu126
+    - --index-url https://download.pytorch.org/whl/cu126

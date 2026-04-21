@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "scene-flow"
+version = "0.1.0"
+description = "Object-aware scene flow prediction"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["gmpy2"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["*"]
+
+[tool.ruff]
+src = ["src"]
+line-length = 140
+lint.select = ["F", "I"]
+
+[tool.black]
+line-length = 140
+target-version = ['py312']
