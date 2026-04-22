@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-TODO: Add project overview
+Naive deep learning scene flow models treat LiDAR points independently, causing rigid objects (i.e. cars) to appear to deform ("jelly effect"). This pipeline applies a deterministic post-processing step: cluster and aggregate flow vectors within each bounding box to enforce rigid motion. We validate incrementally by swapping ground truth and predicted flow and boxes, and evaluate on the Waymo Open Dataset.
 
 ## Key Workflows & Commands
 ### Environment Management
