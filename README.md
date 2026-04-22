@@ -131,6 +131,40 @@ When `--output-dir` is specified, two JSON files are saved:
 | `epe_pedestrian` | EPE for pedestrian points |
 | `epe_cyclist` | EPE for cyclist points |
 
+## Visualization
+
+Generate visualizations for any frame pair to inspect data quality and pipeline behavior:
+
+```bash
+python -m rigid_flow.visualization.visualize \
+  --data-root ../data/validation_0000 \
+  --output-dir figures/ \
+  --frame-index 0 \
+  --method median
+```
+
+Add `--show` to display plots interactively instead of just saving.
+
+This produces 5 PNG files:
+
+| File | Description |
+|------|-------------|
+| `bev_boxes.png` | Bird's-eye view of point cloud colored by height, with oriented bounding boxes overlaid by class |
+| `flow_magnitude.png` | BEV heatmap of per-point flow magnitude (L2 norm) |
+| `flow_quiver.png` | Subsampled flow arrows colored by foreground/background, with box outlines |
+| `correction_comparison.png` | 3-panel comparison: raw flow, corrected flow, and correction residual magnitude |
+| `per_object_histograms.png` | Per-object histograms of flow magnitude before (blue) and after (red) rigid correction |
+
+### Visualization CLI arguments
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--data-root` | Yes | — | Path to directory containing `.tfrecord` files |
+| `--output-dir` | Yes | — | Directory to save PNG figures |
+| `--frame-index` | No | `0` | Which frame pair to visualize (0-indexed) |
+| `--method` | No | `median` | Aggregation method: `median` or `svd` |
+| `--show` | No | off | Display plots interactively |
+
 ## Design
 
 ### Module independence
