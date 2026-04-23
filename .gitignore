@@ -5,6 +5,12 @@
 figures/
 results/
 
+# Cursor / Claude project files
+.claude/
+
+# Local design notes (not versioned)
+resilient-fluttering-octopus.md
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

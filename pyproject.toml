@@ -17,6 +17,7 @@ include = ["*"]
 [tool.ruff]
 src = ["src"]
 line-length = 140
+extend-exclude = ["src/rigid_flow/data/waymo_protos/**/*.py"]
 lint.select = ["F", "I"]
 
 [tool.black]

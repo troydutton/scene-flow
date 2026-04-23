@@ -17,6 +17,7 @@ import numpy as np
 
 from rigid_flow.aggregation.rigid_aggregation import compute_rigid_flow
 from rigid_flow.core.types import BoundingBox, SceneFlowPair
+from rigid_flow.data.pred_boxes import PredBoxIndex
 from rigid_flow.data.waymo_parser import WaymoParser
 from rigid_flow.eval.metrics import evaluate
 from rigid_flow.geometry.points_in_boxes import points_in_boxes_cpu
@@ -110,6 +111,8 @@ def run_pipeline(
     output_dir: Path | None = None,
     method: str = "median",
     max_pairs: int | None = None,
+    pred_boxes_bin: Path | None = None,
+    score_threshold: float = 0.0,
 ) -> list[dict[str, float]]:
     """Run the full rigid scene flow evaluation pipeline.
 
@@ -124,12 +127,29 @@ def run_pipeline(
         (``"median"`` or ``"svd"``).
     max_pairs:
         If set, stop after processing this many frame pairs.
+    pred_boxes_bin:
+        Optional path to a Waymo detection-submission ``.bin`` file.  When
+        supplied, the boxes used for rigid aggregation and evaluation are
+        looked up from this file by ``(sequence_id, timestamp_us_t0)`` instead
+        of using ``pair.boxes_t0``.  Ground-truth flow is still computed from
+        the GT boxes in the tfrecord — only the refinement/evaluation boxes
+        change.
+    score_threshold:
+        Minimum ``Object.score`` to accept when selecting predicted boxes.
+        Ignored when ``pred_boxes_bin`` is ``None``.
 
     Returns
     -------
     list of per-frame metric dictionaries (same keys as :func:`evaluate`).
     """
     parser = WaymoParser(data_root)
+    pred_index = PredBoxIndex(pred_boxes_bin) if pred_boxes_bin is not None else None
+    if pred_index is not None:
+        logger.info(
+            "Using predicted boxes from %s (score_threshold=%.2f)",
+            pred_boxes_bin,
+            score_threshold,
+        )
     all_metrics: list[dict[str, float]] = []
 
     for idx, pair in enumerate(parser.iterate_pairs()):
@@ -144,56 +164,77 @@ def run_pipeline(
             pair.num_points_t0,
         )
 
-        # (a) Compute ground-truth flow.
+        # (a) Compute ground-truth flow (always uses GT boxes from tfrecord).
         pair = compute_gt_flow(pair)
 
-        # (b) Assign points to boxes.
+        # (b) GT box assignments — needed for epe_true_foreground regardless of mode.
         if pair.boxes_t0:
-            boxes_array = np.stack(
-                [b.as_7dof for b in pair.boxes_t0], axis=0
-            )  # (M, 7)
+            gt_boxes_array = np.stack([b.as_7dof for b in pair.boxes_t0], axis=0)
+        else:
+            gt_boxes_array = np.empty((0, 7), dtype=np.float32)
+        gt_point_to_box = points_in_boxes_cpu(pair.points_t0, gt_boxes_array)
+
+        # (c) Pick the boxes used for rigid refinement + evaluation.
+        if pred_index is not None:
+            boxes_to_use: list[BoundingBox] = pred_index.get(
+                pair.sequence_id, pair.timestamp_us_t0, score_threshold
+            )
+        else:
+            boxes_to_use = list(pair.boxes_t0)
+
+        # (d) Assign points to the chosen (predicted or GT) boxes.
+        if boxes_to_use:
+            boxes_array = np.stack([b.as_7dof for b in boxes_to_use], axis=0)  # (M, 7)
         else:
             boxes_array = np.empty((0, 7), dtype=np.float32)
         point_to_box = points_in_boxes_cpu(pair.points_t0, boxes_array)
 
-        # (c) Rigid aggregation.
+        # (e) Rigid aggregation.
         result = compute_rigid_flow(
             pair.points_t0,
             pair.gt_flow,
             point_to_box,
-            pair.boxes_t0,
+            boxes_to_use,
             method,
         )
 
-        # (d) Evaluate.
+        # (f) Evaluate.  Pass gt_point_to_box so epe_true_foreground is always
+        # computed against GT box membership regardless of the box source.
         metrics = evaluate(
             result.flow,
             pair.gt_flow,
             point_to_box,
-            pair.boxes_t0,
+            boxes_to_use,
             pair.points_t0,
             pair.dt,
+            gt_point_to_box=gt_point_to_box,
         )
 
-        # (e) Log per-frame metrics.
+        # (g) Log per-frame metrics.
         logger.info(
-            "  Pair %d — EPE mean=%.4f  fg=%.4f  bg=%.4f  "
+            "  Pair %d — EPE mean=%.4f  fg=%.4f  true_fg=%.4f  bg=%.4f  "
             "acc_strict=%.1f%%  acc_relaxed=%.1f%%  out3d=%.1f%%  "
-            "flow_var=%.6f  (N=%d)",
+            "flow_var=%.6f  (N=%d, pred_boxes=%d, gt_boxes=%d)",
             idx,
             metrics["epe_mean"],
             metrics["epe_foreground"],
+            metrics["epe_true_foreground"],
             metrics["epe_background"],
             metrics["acc_strict"],
             metrics["acc_relaxed"],
             metrics["out3d"],
             metrics["flow_variance_mean"],
             metrics["num_points"],
+            len(boxes_to_use),
+            len(pair.boxes_t0),
         )
 
-        # (f) Collect.
+        # (h) Collect.
         metrics["sequence_id"] = pair.sequence_id  # type: ignore[assignment]
         metrics["frame_index"] = pair.frame_index  # type: ignore[assignment]
+        metrics["num_gt_boxes"] = int(len(pair.boxes_t0))
+        metrics["num_pred_boxes"] = int(len(boxes_to_use)) if pred_index is not None else -1
+        metrics["score_threshold"] = float(score_threshold) if pred_index is not None else float("nan")
         all_metrics.append(metrics)
 
     # -- Aggregate metrics across all frames --
@@ -272,6 +313,20 @@ if __name__ == "__main__":
         default=None,
         help="Maximum number of frame pairs to process.",
     )
+    parser.add_argument(
+        "--pred-boxes-bin",
+        type=Path,
+        default=None,
+        help="Optional Waymo detection-submission .bin file; when given, its "
+        "boxes replace GT boxes for rigid aggregation + evaluation.",
+    )
+    parser.add_argument(
+        "--score-threshold",
+        type=float,
+        default=0.0,
+        help="Score threshold applied to predicted boxes (ignored without "
+        "--pred-boxes-bin).",
+    )
 
     args = parser.parse_args()
 
@@ -285,4 +340,6 @@ if __name__ == "__main__":
         output_dir=args.output_dir,
         method=args.method,
         max_pairs=args.max_pairs,
+        pred_boxes_bin=args.pred_boxes_bin,
+        score_threshold=args.score_threshold,
     )

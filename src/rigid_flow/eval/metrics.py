@@ -4,34 +4,60 @@ Computes endpoint error (EPE) broken down by motion speed, semantic class,
 and foreground/background membership, plus standard accuracy/outlier metrics
 and rigidity structural metrics.
 
+Design notes
+------------
+Speed bucketing always uses the *ground-truth flow magnitude* (``||gt_flow||/dt``)
+rather than any predicted-box ``metadata.speed`` field.  Detector velocity
+estimates are often missing or incorrect (LiDAR detectors without a temporal
+backbone commonly output ``speed = 0``), which would make speed-bucketed
+metrics degenerate.  Using GT flow magnitude ensures the static/slow/fast
+labels always reflect the physical reality of the scene.
+
+Two foreground definitions are tracked:
+- **Predicted foreground** (``fg_mask``): points that fall inside a predicted
+  (or GT, in Phase A) box, as given by the ``point_to_box`` argument.
+- **True foreground** (``true_fg_mask``): points that fall inside a GT box, as
+  given by the optional ``gt_point_to_box`` argument.  When only GT boxes are
+  used this is identical to ``fg_mask``.  In Phase B onward (predicted boxes),
+  a missed detection leaves object points out of ``fg_mask`` entirely — making
+  ``epe_foreground`` look artificially perfect.  ``epe_true_foreground`` scores
+  those missed points against a **zero-flow baseline** (no object motion
+  predicted) so they are not credited with perfect error when the refinement
+  input was ground-truth flow.
+
 Metric key reference
 --------------------
 epe_mean                 Global mean EPE over all N points.
-epe_background           Mean EPE for background (no-box) points.
-epe_foreground           Mean EPE for foreground (in-box) points.  [Rigid-EPE]
-epe_static               Mean EPE for fg points with box speed < low threshold.
-epe_slow                 Mean EPE for fg points with low <= speed < high.
-epe_fast                 Mean EPE for fg points with speed >= high threshold.
-epe_vehicle              Mean EPE for points in vehicle boxes.
-epe_pedestrian           Mean EPE for points in pedestrian boxes.
-epe_cyclist              Mean EPE for points in cyclist boxes.
-epe_all_static           Mean EPE for ALL points with ||gt_flow||/dt < low.
-epe_all_slow             Mean EPE for ALL points with low <= ||gt_flow||/dt < high.
-epe_all_fast             Mean EPE for ALL points with ||gt_flow||/dt >= high.
+epe_background           Mean EPE for predicted-background points.
+epe_foreground           Mean EPE for predicted-foreground points.
+epe_static               Mean EPE for pred-fg points with ||gt_flow||/dt < low.
+epe_slow                 Mean EPE for pred-fg points with low <= ||gt_flow||/dt < high.
+epe_fast                 Mean EPE for pred-fg points with ||gt_flow||/dt >= high.
+epe_vehicle              Mean EPE for points in predicted vehicle boxes.
+epe_pedestrian           Mean EPE for points in predicted pedestrian boxes.
+epe_cyclist              Mean EPE for points in predicted cyclist boxes.
+epe_true_foreground      Mean EPE for ALL points inside a GT box (detection-agnostic).
+epe_true_fg_static       epe_true_foreground restricted to ||gt_flow||/dt < low.
+epe_true_fg_slow         epe_true_foreground restricted to low <= ||gt_flow||/dt < high.
+epe_true_fg_fast         epe_true_foreground restricted to ||gt_flow||/dt >= high.
+epe_all_static           Mean EPE for ALL N points with ||gt_flow||/dt < low.
+epe_all_slow             Mean EPE for ALL N points with low <= ||gt_flow||/dt < high.
+epe_all_fast             Mean EPE for ALL N points with ||gt_flow||/dt >= high.
 acc_strict               % of ALL points with EPE<0.05m OR rel_err<5%.
 acc_relaxed              % of ALL points with EPE<0.10m OR rel_err<10%.
 out3d                    % of ALL points with EPE>0.30m OR rel_err>10%.
-acc_strict_fg            acc_strict restricted to foreground points.
-acc_relaxed_fg           acc_relaxed restricted to foreground points.
-out3d_fg                 out3d restricted to foreground points.
-acc_strict_bg            acc_strict restricted to background points.
-acc_relaxed_bg           acc_relaxed restricted to background points.
-out3d_bg                 out3d restricted to background points.
+acc_strict_fg            acc_strict restricted to predicted-foreground points.
+acc_relaxed_fg           acc_relaxed restricted to predicted-foreground points.
+out3d_fg                 out3d restricted to predicted-foreground points.
+acc_strict_bg            acc_strict restricted to predicted-background points.
+acc_relaxed_bg           acc_relaxed restricted to predicted-background points.
+out3d_bg                 out3d restricted to predicted-background points.
 flow_variance_mean       Mean intra-object flow variance (trace of covariance).
 dist_preservation_mean   Mean pairwise distance preservation error (ΔD) per box.
 num_points               Total number of points in the frame.
-num_foreground           Number of foreground (in-box) points.
-num_background           Number of background points.
+num_foreground           Number of predicted-foreground points.
+num_background           Number of predicted-background points.
+num_true_foreground      Number of GT-foreground points (may differ from num_foreground).
 """
 
 from __future__ import annotations
@@ -252,13 +278,14 @@ def rigidity_metrics(
 
 
 def evaluate(
-    predicted_flow: NDArray[np.float32],  # (N, 3)
-    gt_flow: NDArray[np.float32],         # (N, 3)
-    point_to_box: NDArray[np.int32],      # (N,) box index, -1=background
+    predicted_flow: NDArray[np.float32],          # (N, 3)
+    gt_flow: NDArray[np.float32],                 # (N, 3)
+    point_to_box: NDArray[np.int32],              # (N,) predicted box index, -1=bg
     boxes: list[BoundingBox],
-    points_t0: NDArray[np.float32],       # (N, 3)
-    dt: float,                            # seconds between frames
+    points_t0: NDArray[np.float32],              # (N, 3)
+    dt: float,                                    # seconds between frames
     speed_thresholds: tuple[float, float] = (0.5, 2.0),
+    gt_point_to_box: NDArray[np.int32] | None = None,  # (N,) GT box index, -1=bg
 ) -> dict[str, float]:
     """Compute all evaluation metrics broken down by speed, class, fg/bg, and rigidity.
 
@@ -267,10 +294,21 @@ def evaluate(
     predicted_flow : (N, 3) predicted scene flow vectors.
     gt_flow : (N, 3) ground-truth scene flow vectors.
     point_to_box : (N,) index into *boxes* for each point; -1 means background.
+        This uses **predicted** box assignments when running with a detector,
+        or GT box assignments when running in GT-box mode.
     boxes : list of BoundingBox objects for the current frame.
     points_t0 : (N, 3) point positions at t0 (needed for rigidity metrics).
-    dt : time delta in seconds (needed for full-scene threeway EPE).
+    dt : time delta in seconds (needed for speed-bucketed EPE).
     speed_thresholds : (low, high) thresholds in m/s for static/slow/fast buckets.
+    gt_point_to_box : optional (N,) GT box index per point (-1 = background).
+        When provided, ``epe_true_foreground`` and related metrics are computed
+        over all points that lie inside a GT box, regardless of whether those
+        points were captured by the predicted boxes.  Points in a GT box but
+        missed by the detector (pred background) use a **zero-flow baseline** for
+        those true-foreground EPEs so missed detections are not scored as a
+        perfect prediction when refinement used GT flow as input.  When
+        omitted (e.g. GT-box mode where ``point_to_box`` already is the GT
+        assignment), ``epe_true_foreground`` falls back to ``epe_foreground``.
 
     Returns
     -------
@@ -280,18 +318,25 @@ def evaluate(
     rel_err = _relative_error(epe, gt_flow)
     n = len(epe)
 
+    # Predicted foreground/background splits.
     bg_mask = point_to_box == -1
     fg_mask = ~bg_mask
     all_mask = np.ones(n, dtype=np.bool_)
 
     threshold_low, threshold_high = speed_thresholds
 
-    # Pre-compute per-point speed and class_label for foreground points.
-    point_speed = np.empty(n, dtype=np.float32)
-    point_class = np.empty(n, dtype=np.int32)
-    point_speed[bg_mask] = np.nan
-    point_class[bg_mask] = -1
+    # GT-flow-based per-point speed (used for ALL speed bucketing).
+    gt_speed = np.linalg.norm(gt_flow, axis=1).astype(np.float32)
+    if dt > 0:
+        gt_speed = gt_speed / dt
 
+    # Speed buckets for predicted-foreground points using GT flow speed.
+    static_mask = fg_mask & (gt_speed < threshold_low)
+    slow_mask = fg_mask & (gt_speed >= threshold_low) & (gt_speed < threshold_high)
+    fast_mask = fg_mask & (gt_speed >= threshold_high)
+
+    # Class buckets (foreground only, from predicted box class labels).
+    point_class = np.full(n, -1, dtype=np.int32)
     if np.any(fg_mask):
         fg_indices = point_to_box[fg_mask]
         for i, box in enumerate(boxes):
@@ -300,21 +345,36 @@ def evaluate(
                 continue
             full_mask = np.zeros(n, dtype=np.bool_)
             full_mask[fg_mask] = box_mask_in_fg
-            point_speed[full_mask] = box.speed
             point_class[full_mask] = box.class_label
 
-    # Speed buckets (foreground only, using box speed metadata).
-    static_mask = fg_mask & (point_speed < threshold_low)
-    slow_mask = fg_mask & (point_speed >= threshold_low) & (point_speed < threshold_high)
-    fast_mask = fg_mask & (point_speed >= threshold_high)
-
-    # Class buckets (foreground only).
     vehicle_mask = fg_mask & (point_class == 1)
     pedestrian_mask = fg_mask & (point_class == 2)
     cyclist_mask = fg_mask & (point_class == 4)
 
+    # True-foreground mask: points inside a GT box regardless of detection.
+    if gt_point_to_box is not None:
+        true_fg_mask = gt_point_to_box != -1
+    else:
+        # Graceful fallback: identical to predicted-fg when using GT boxes.
+        true_fg_mask = fg_mask
+
+    # When GT membership is known separately from predicted boxes, points that
+    # lie in a GT object but are missed by the detector must not inherit a
+    # perfect match from using GT flow as the refinement input (Phase B).
+    if gt_point_to_box is not None:
+        missed_detection = (gt_point_to_box != -1) & (point_to_box == -1)
+        zero_baseline_epe = endpoint_error(np.zeros_like(gt_flow), gt_flow)
+        epe_true_fg = np.where(missed_detection, zero_baseline_epe, epe)
+    else:
+        epe_true_fg = epe
+
+    true_fg_static_mask = true_fg_mask & (gt_speed < threshold_low)
+    true_fg_slow_mask = true_fg_mask & (gt_speed >= threshold_low) & (gt_speed < threshold_high)
+    true_fg_fast_mask = true_fg_mask & (gt_speed >= threshold_high)
+
     num_fg = int(np.count_nonzero(fg_mask))
     num_bg = int(np.count_nonzero(bg_mask))
+    num_true_fg = int(np.count_nonzero(true_fg_mask))
 
     # -- Standard accuracy / outlier metrics --
     acc_all = accuracy_metrics(epe, rel_err, all_mask)
@@ -328,17 +388,24 @@ def evaluate(
     rigid = rigidity_metrics(predicted_flow, points_t0, point_to_box, boxes)
 
     return {
-        # EPE breakdowns
+        # EPE breakdowns (predicted-box semantics)
         "epe_mean": _safe_mean(epe, all_mask),
         "epe_background": _safe_mean(epe, bg_mask),
         "epe_foreground": _safe_mean(epe, fg_mask),
+        # Speed buckets for predicted-fg using GT flow speed (not box.speed metadata)
         "epe_static": _safe_mean(epe, static_mask),
         "epe_slow": _safe_mean(epe, slow_mask),
         "epe_fast": _safe_mean(epe, fast_mask),
+        # Class EPE (predicted-fg only)
         "epe_vehicle": _safe_mean(epe, vehicle_mask),
         "epe_pedestrian": _safe_mean(epe, pedestrian_mask),
         "epe_cyclist": _safe_mean(epe, cyclist_mask),
-        # Full-scene threeway EPE
+        # True-foreground EPE: evaluated on GT-box points regardless of detection recall
+        "epe_true_foreground": _safe_mean(epe_true_fg, true_fg_mask),
+        "epe_true_fg_static": _safe_mean(epe_true_fg, true_fg_static_mask),
+        "epe_true_fg_slow": _safe_mean(epe_true_fg, true_fg_slow_mask),
+        "epe_true_fg_fast": _safe_mean(epe_true_fg, true_fg_fast_mask),
+        # Full-scene threeway EPE (all N points, GT speed)
         **threeway,
         # Standard accuracy / outlier
         "acc_strict": acc_all["acc_strict"],
@@ -356,4 +423,5 @@ def evaluate(
         "num_points": n,
         "num_foreground": num_fg,
         "num_background": num_bg,
+        "num_true_foreground": num_true_fg,
     }
