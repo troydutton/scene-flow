@@ -10,6 +10,7 @@ required), making this compatible with Apple Silicon / ARM64.
 from __future__ import annotations
 
 import logging
+import sys
 import tarfile
 import zlib
 from collections.abc import Iterator
@@ -21,6 +22,28 @@ from numpy.typing import NDArray
 from rigid_flow.core.types import BoundingBox, SceneFlowPair
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_extractall(tar: tarfile.TarFile, dest: Path) -> None:
+    """Extract archive members under *dest* without path traversal.
+
+    Python 3.12+ uses :data:`tarfile.data_filter` via ``filter="data"``.
+    Earlier versions validate each member path resolves under *dest*.
+    """
+    dest = dest.resolve()
+    if sys.version_info >= (3, 12):
+        tar.extractall(dest, filter="data")
+        return
+
+    for member in tar.getmembers():
+        if member.name in {"", ".", ".."} or member.name.startswith("/"):
+            raise ValueError(f"Unsafe or absolute path in archive: {member.name!r}")
+        target = (dest / member.name).resolve()
+        try:
+            target.relative_to(dest)
+        except ValueError as exc:
+            raise ValueError(f"Path traversal in archive: {member.name!r}") from exc
+    tar.extractall(dest)
 
 
 class WaymoParser:
@@ -70,7 +93,7 @@ class WaymoParser:
 
         logger.info("Extracting %s -> %s", tar_path, dest)
         with tarfile.open(tar_path, "r:*") as tar:
-            tar.extractall(dest)
+            _safe_extractall(tar, dest)
 
         # Determine extracted root: if there is a single top-level directory,
         # return it; otherwise return dest.

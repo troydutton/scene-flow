@@ -74,6 +74,9 @@ def compute_rigid_flow(
     -------
     FlowResult with corrected flow, raw flow copy, and per-object metadata.
     """
+    if method not in {"median", "svd"}:
+        raise ValueError(f"Unknown method '{method}'. Expected 'median' or 'svd'.")
+
     n = points.shape[0]
     corrected_flow = raw_flow.copy()
     is_rigid = np.zeros(n, dtype=np.bool_)
@@ -106,9 +109,6 @@ def compute_rigid_flow(
             fitted_target = (R @ pts.astype(np.float64).T).T + t  # (K, 3)
             corrected_flow[mask] = (fitted_target - pts.astype(np.float64)).astype(np.float32)
             per_object_translation[boxes[box_idx].tracking_id] = t.astype(np.float32)
-
-        else:
-            raise ValueError(f"Unknown method '{method}'. Expected 'median' or 'svd'.")
 
         is_rigid[mask] = True
 

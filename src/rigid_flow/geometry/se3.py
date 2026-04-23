@@ -47,13 +47,13 @@ class SE3:
 
     @property
     def rotation(self) -> NDArray[np.float64]:
-        """Return the 3x3 rotation sub-matrix."""
-        return self._matrix[:3, :3]
+        """Return a copy of the 3x3 rotation sub-matrix."""
+        return self._matrix[:3, :3].copy()
 
     @property
     def translation(self) -> NDArray[np.float64]:
-        """Return the (3,) translation vector."""
-        return self._matrix[:3, 3]
+        """Return a copy of the (3,) translation vector."""
+        return self._matrix[:3, 3].copy()
 
     @property
     def matrix(self) -> NDArray[np.float64]:

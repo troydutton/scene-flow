@@ -26,6 +26,9 @@ Interpretive notes
       this.
 - ``epe_static/slow/fast`` use **per-point GT flow speed** (``||gt_flow||/dt``)
   on predicted-foreground points, not detector ``metadata.speed`` fields.
+- ``epe_true_foreground`` (and true-fg speed buckets) score **missed** GT object
+  points (pred background) against a **zero-flow baseline** so recall gaps are
+  visible; other EPEs still compare the rigidified output to GT.
 """
 
 from __future__ import annotations
@@ -72,7 +75,7 @@ def main() -> None:
     parser.add_argument(
         "--data-root",
         type=Path,
-        default=Path("/Users/jaspertan/Documents/school/ut_austin/projects/data"),
+        required=True,
         help="Directory (searched recursively) containing Waymo .tfrecord files.",
     )
     parser.add_argument(

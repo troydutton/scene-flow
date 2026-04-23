@@ -20,8 +20,10 @@ Two foreground definitions are tracked:
   given by the optional ``gt_point_to_box`` argument.  When only GT boxes are
   used this is identical to ``fg_mask``.  In Phase B onward (predicted boxes),
   a missed detection leaves object points out of ``fg_mask`` entirely — making
-  ``epe_foreground`` look artificially perfect.  ``epe_true_foreground`` exposes
-  that blind spot by evaluating every object point regardless of detection recall.
+  ``epe_foreground`` look artificially perfect.  ``epe_true_foreground`` scores
+  those missed points against a **zero-flow baseline** (no object motion
+  predicted) so they are not credited with perfect error when the refinement
+  input was ground-truth flow.
 
 Metric key reference
 --------------------
@@ -301,9 +303,12 @@ def evaluate(
     gt_point_to_box : optional (N,) GT box index per point (-1 = background).
         When provided, ``epe_true_foreground`` and related metrics are computed
         over all points that lie inside a GT box, regardless of whether those
-        points were captured by the predicted boxes.  When omitted (e.g. GT-box
-        mode where ``point_to_box`` already is the GT assignment),
-        ``epe_true_foreground`` falls back to ``epe_foreground``.
+        points were captured by the predicted boxes.  Points in a GT box but
+        missed by the detector (pred background) use a **zero-flow baseline** for
+        those true-foreground EPEs so missed detections are not scored as a
+        perfect prediction when refinement used GT flow as input.  When
+        omitted (e.g. GT-box mode where ``point_to_box`` already is the GT
+        assignment), ``epe_true_foreground`` falls back to ``epe_foreground``.
 
     Returns
     -------
@@ -353,6 +358,16 @@ def evaluate(
         # Graceful fallback: identical to predicted-fg when using GT boxes.
         true_fg_mask = fg_mask
 
+    # When GT membership is known separately from predicted boxes, points that
+    # lie in a GT object but are missed by the detector must not inherit a
+    # perfect match from using GT flow as the refinement input (Phase B).
+    if gt_point_to_box is not None:
+        missed_detection = (gt_point_to_box != -1) & (point_to_box == -1)
+        zero_baseline_epe = endpoint_error(np.zeros_like(gt_flow), gt_flow)
+        epe_true_fg = np.where(missed_detection, zero_baseline_epe, epe)
+    else:
+        epe_true_fg = epe
+
     true_fg_static_mask = true_fg_mask & (gt_speed < threshold_low)
     true_fg_slow_mask = true_fg_mask & (gt_speed >= threshold_low) & (gt_speed < threshold_high)
     true_fg_fast_mask = true_fg_mask & (gt_speed >= threshold_high)
@@ -386,10 +401,10 @@ def evaluate(
         "epe_pedestrian": _safe_mean(epe, pedestrian_mask),
         "epe_cyclist": _safe_mean(epe, cyclist_mask),
         # True-foreground EPE: evaluated on GT-box points regardless of detection recall
-        "epe_true_foreground": _safe_mean(epe, true_fg_mask),
-        "epe_true_fg_static": _safe_mean(epe, true_fg_static_mask),
-        "epe_true_fg_slow": _safe_mean(epe, true_fg_slow_mask),
-        "epe_true_fg_fast": _safe_mean(epe, true_fg_fast_mask),
+        "epe_true_foreground": _safe_mean(epe_true_fg, true_fg_mask),
+        "epe_true_fg_static": _safe_mean(epe_true_fg, true_fg_static_mask),
+        "epe_true_fg_slow": _safe_mean(epe_true_fg, true_fg_slow_mask),
+        "epe_true_fg_fast": _safe_mean(epe_true_fg, true_fg_fast_mask),
         # Full-scene threeway EPE (all N points, GT speed)
         **threeway,
         # Standard accuracy / outlier

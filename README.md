@@ -154,7 +154,7 @@ python scripts/run_pred_box_sweep.py \
 
 | Argument | Default | Description |
 |----------|---------|-------------|
-| `--data-root` | *(script default; override)* | Root directory searched recursively for `*.tfrecord` |
+| `--data-root` | *(required)* | Root directory searched recursively for `*.tfrecord` |
 | `--pred-boxes-bin` | `results/2_stage/detection_pred.bin` | Detection `.bin` |
 | `--gt-aggregate` | `results/aggregate_metrics.json` | Phase A `aggregate_metrics.json` for deltas |
 | `--output-root` | `results/phase_b_gt_flow_pred_boxes` | Parent dir for `thr_*` folders |
@@ -211,11 +211,11 @@ Membership uses **evaluation** boxes (GT in Phase A, predicted in Phase B).
 
 ### True foreground (GT boxes, detection-agnostic)
 
-Computed from a **separate** GT point-to-box map. In Phase A this matches predicted-fg; in Phase B it does **not** if detectors miss or misalign objects.
+Computed from a **separate** GT point-to-box map. In Phase A this matches predicted-fg; in Phase B it does **not** if detectors miss or misalign objects. For Phase B, points inside a GT box but **outside** all predicted boxes are scored against a **zero-flow baseline** (not the rigidified output) so missed detections are not credited with a perfect match.
 
 | Key | Meaning |
 |-----|---------|
-| `epe_true_foreground` | Mean EPE over every point inside any **GT** box |
+| `epe_true_foreground` | Mean EPE over every point inside any **GT** box (Phase B: zero baseline for missed detections as above) |
 | `epe_true_fg_static` / `epe_true_fg_slow` / `epe_true_fg_fast` | Same as above, split by GT-flow speed using the same 0.5 / 2.0 m/s thresholds |
 
 ### Speed buckets on predicted-foreground only
