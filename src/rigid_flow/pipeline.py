@@ -171,15 +171,23 @@ def run_pipeline(
             pair.gt_flow,
             point_to_box,
             pair.boxes_t0,
+            pair.points_t0,
+            pair.dt,
         )
 
         # (e) Log per-frame metrics.
         logger.info(
-            "  Pair %d — EPE mean=%.4f  fg=%.4f  bg=%.4f  (N=%d)",
+            "  Pair %d — EPE mean=%.4f  fg=%.4f  bg=%.4f  "
+            "acc_strict=%.1f%%  acc_relaxed=%.1f%%  out3d=%.1f%%  "
+            "flow_var=%.6f  (N=%d)",
             idx,
             metrics["epe_mean"],
             metrics["epe_foreground"],
             metrics["epe_background"],
+            metrics["acc_strict"],
+            metrics["acc_relaxed"],
+            metrics["out3d"],
+            metrics["flow_variance_mean"],
             metrics["num_points"],
         )
 
