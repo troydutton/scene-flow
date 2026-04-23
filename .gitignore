@@ -1,11 +1,15 @@
-results/
+# macOS
+.DS_Store
+
+# Generated outputs
 figures/
+results/
+
+# Cursor / Claude project files
 .claude/
 
 # Local design notes (not versioned)
 resilient-fluttering-octopus.md
-
-.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
