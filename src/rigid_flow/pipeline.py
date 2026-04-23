@@ -19,6 +19,7 @@ from rigid_flow.aggregation.rigid_aggregation import compute_rigid_flow
 from rigid_flow.core.types import BoundingBox, SceneFlowPair
 from rigid_flow.data.pred_boxes import PredBoxIndex
 from rigid_flow.data.waymo_parser import WaymoParser
+from rigid_flow.data.zeroflow_loader import ZeroFlowDataSource
 from rigid_flow.eval.metrics import evaluate
 from rigid_flow.geometry.points_in_boxes import points_in_boxes_cpu
 from rigid_flow.geometry.se3 import SE3
@@ -281,6 +282,192 @@ def run_pipeline(
 
 
 # ---------------------------------------------------------------------------
+# ZeroFlow predicted-flow pipeline
+# ---------------------------------------------------------------------------
+
+
+def run_zeroflow_pipeline(
+    tfrecord_root: Path,
+    pkl_root: Path,
+    feather_root: Path,
+    output_dir: Path | None = None,
+    method: str = "median",
+    max_pairs: int | None = None,
+    pred_boxes_bin: Path | None = None,
+    score_threshold: float = 0.0,
+) -> list[dict[str, float]]:
+    """Run rigid scene flow evaluation using ZeroFlow predicted flow.
+
+    Unlike :func:`run_pipeline` which uses GT flow as the refinement input,
+    this function feeds **ZeroFlow predictions** into ``compute_rigid_flow``
+    and evaluates the rigidified output against GT flow derived from tfrecord
+    bounding box velocities.
+
+    The point clouds come from the pkl files (ground-removed, subsampled)
+    rather than from the raw tfrecord range images.
+
+    Parameters
+    ----------
+    tfrecord_root:
+        Directory containing Waymo ``.tfrecord`` files (for boxes / timestamps).
+    pkl_root:
+        Directory with per-segment subdirectories of ``{idx:06d}.pkl`` files.
+    feather_root:
+        Directory with per-segment subdirectories of ``{idx:010d}.feather`` files.
+    output_dir:
+        If provided, per-frame and aggregate results are saved as JSON here.
+    method:
+        Aggregation method (``"median"`` or ``"svd"``).
+    max_pairs:
+        Stop after this many frame pairs.
+    pred_boxes_bin:
+        Optional detection ``.bin`` file for Phase D (predicted boxes).
+    score_threshold:
+        Minimum detection score for predicted boxes.
+    """
+    source = ZeroFlowDataSource(pkl_root, feather_root, tfrecord_root)
+    pred_index = PredBoxIndex(pred_boxes_bin) if pred_boxes_bin is not None else None
+    if pred_index is not None:
+        logger.info(
+            "Using predicted boxes from %s (score_threshold=%.2f)",
+            pred_boxes_bin,
+            score_threshold,
+        )
+
+    all_metrics: list[dict[str, float]] = []
+
+    for idx, (pair, pred_flow, is_valid) in enumerate(source.iterate_pairs()):
+        if max_pairs is not None and idx >= max_pairs:
+            break
+
+        logger.info(
+            "Processing pair %d  (seq=%s, frame=%d, N=%d, valid=%d)",
+            idx,
+            pair.sequence_id,
+            pair.frame_index,
+            pair.num_points_t0,
+            int(is_valid.sum()),
+        )
+
+        # (a) Compute GT flow on the pkl point cloud.
+        pair = compute_gt_flow(pair)
+
+        # (b) Build the flow input: use ZeroFlow where valid, zero elsewhere.
+        flow_input = np.zeros_like(pred_flow)
+        flow_input[is_valid] = pred_flow[is_valid]
+
+        # (c) GT box assignments for epe_true_foreground.
+        if pair.boxes_t0:
+            gt_boxes_array = np.stack([b.as_7dof for b in pair.boxes_t0], axis=0)
+        else:
+            gt_boxes_array = np.empty((0, 7), dtype=np.float32)
+        gt_point_to_box = points_in_boxes_cpu(pair.points_t0, gt_boxes_array)
+
+        # (d) Pick boxes for rigid refinement + evaluation.
+        if pred_index is not None:
+            boxes_to_use: list[BoundingBox] = pred_index.get(
+                pair.sequence_id, pair.timestamp_us_t0, score_threshold
+            )
+        else:
+            boxes_to_use = list(pair.boxes_t0)
+
+        # (e) Assign points to the chosen boxes.
+        if boxes_to_use:
+            boxes_array = np.stack([b.as_7dof for b in boxes_to_use], axis=0)
+        else:
+            boxes_array = np.empty((0, 7), dtype=np.float32)
+        point_to_box = points_in_boxes_cpu(pair.points_t0, boxes_array)
+
+        # (f) Rigid aggregation with predicted flow as input (not GT).
+        result = compute_rigid_flow(
+            pair.points_t0,
+            flow_input,
+            point_to_box,
+            boxes_to_use,
+            method,
+        )
+
+        # (g) Evaluate rigidified predicted flow against GT flow.
+        metrics = evaluate(
+            result.flow,
+            pair.gt_flow,
+            point_to_box,
+            boxes_to_use,
+            pair.points_t0,
+            pair.dt,
+            gt_point_to_box=gt_point_to_box,
+        )
+
+        logger.info(
+            "  Pair %d — EPE mean=%.4f  fg=%.4f  true_fg=%.4f  bg=%.4f  "
+            "acc_strict=%.1f%%  acc_relaxed=%.1f%%  out3d=%.1f%%  "
+            "flow_var=%.6f  (N=%d, pred_boxes=%d, gt_boxes=%d)",
+            idx,
+            metrics["epe_mean"],
+            metrics["epe_foreground"],
+            metrics["epe_true_foreground"],
+            metrics["epe_background"],
+            metrics["acc_strict"],
+            metrics["acc_relaxed"],
+            metrics["out3d"],
+            metrics["flow_variance_mean"],
+            metrics["num_points"],
+            len(boxes_to_use),
+            len(pair.boxes_t0),
+        )
+
+        # (h) Collect.
+        metrics["sequence_id"] = pair.sequence_id  # type: ignore[assignment]
+        metrics["frame_index"] = pair.frame_index  # type: ignore[assignment]
+        metrics["num_gt_boxes"] = int(len(pair.boxes_t0))
+        metrics["num_pred_boxes"] = int(len(boxes_to_use)) if pred_index is not None else -1
+        metrics["score_threshold"] = float(score_threshold) if pred_index is not None else float("nan")
+        all_metrics.append(metrics)
+
+    # -- Aggregate --
+    if all_metrics:
+        numeric_keys = [
+            k
+            for k in all_metrics[0]
+            if isinstance(all_metrics[0][k], (int, float))
+        ]
+        aggregate: dict[str, float] = {}
+        for key in numeric_keys:
+            values = [
+                m[key]
+                for m in all_metrics
+                if not (isinstance(m[key], float) and math.isnan(m[key]))
+            ]
+            if values:
+                aggregate[f"avg_{key}"] = float(np.mean(values))
+
+        aggregate["total_frames"] = float(len(all_metrics))
+        logger.info("=== Aggregate metrics over %d frames ===", len(all_metrics))
+        for k, v in sorted(aggregate.items()):
+            logger.info("  %s: %.4f", k, v)
+    else:
+        aggregate = {}
+        logger.warning("No frame pairs were processed.")
+
+    # -- Save --
+    if output_dir is not None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        per_frame_path = output_dir / "per_frame_metrics.json"
+        with open(per_frame_path, "w") as f:
+            json.dump(all_metrics, f, indent=2, default=str)
+        logger.info("Per-frame metrics saved to %s", per_frame_path)
+
+        aggregate_path = output_dir / "aggregate_metrics.json"
+        with open(aggregate_path, "w") as f:
+            json.dump(aggregate, f, indent=2)
+        logger.info("Aggregate metrics saved to %s", aggregate_path)
+
+    return all_metrics
+
+
+# ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
 
@@ -304,7 +491,7 @@ if __name__ == "__main__":
         "--method",
         type=str,
         default="median",
-        choices=["median", "svd"],
+        choices=["none", "mean", "median", "weighted_median", "geometric_median", "svd"],
         help="Aggregation method (default: median).",
     )
     parser.add_argument(
