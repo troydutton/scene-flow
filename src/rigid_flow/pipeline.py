@@ -491,7 +491,7 @@ if __name__ == "__main__":
         "--method",
         type=str,
         default="median",
-        choices=["median", "svd"],
+        choices=["none", "mean", "median", "weighted_median", "geometric_median", "svd"],
         help="Aggregation method (default: median).",
     )
     parser.add_argument(

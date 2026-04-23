@@ -101,7 +101,7 @@ def main() -> None:
         "--method",
         type=str,
         default="median",
-        choices=["median", "svd"],
+        choices=["none", "mean", "median", "weighted_median", "geometric_median", "svd"],
         help="Rigid aggregation method.",
     )
     parser.add_argument(
