@@ -2,6 +2,9 @@ results/
 figures/
 .claude/
 
+# Local design notes (not versioned)
+resilient-fluttering-octopus.md
+
 .DS_Store
 
 # Byte-compiled / optimized / DLL files

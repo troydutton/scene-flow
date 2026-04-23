@@ -64,10 +64,6 @@ Outputs:
 
 See the module docstring in `src/rigid_flow/eval/metrics.py` for metric key definitions (EPE splits, accuracy / outlier rates, true-foreground vs predicted-foreground, rigidity statistics). Aggregate JSON files prefix frame-level keys with `avg_`.
 
-### Design notes
-
-Higher-level pipeline phases and file layout are described in `resilient-fluttering-octopus.md` (working design doc; some paths there refer to a planned Hydra layout; the runnable entrypoint is `python -m rigid_flow.pipeline` as above).
-
 ## Legacy ZeroFlow
 
 Training and evaluation for the original ZeroFlow system live under `zeroflow/`; see `CLAUDE.md` for commands and Docker workflows.
