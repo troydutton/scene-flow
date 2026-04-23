@@ -104,14 +104,14 @@ def draw_scenes_plotly(points, valid_mask, flow_vectors, filename='visualization
 
 
 def main():
-    segment_name = "segment-10203656353524179475_7625_000_7645_000_with_camera_labels"
+    segment_name = "segment-11616035176233595745_3548_820_3568_820_with_camera_labels"
     pred_dir = f"/data/troy/predictions/waymo_zeroflow/sequence_len_002/{segment_name}"
     gt_dir = f"/data/troy/datasets/waymo_open_processed_flow/validation/{segment_name}"
     
-    viz_dir = "/data/troy/predictions/waymo_zeroflow/viz"
-    os.makedirs(viz_dir, exist_ok=True)
+    output_dir = "figures"
+    os.makedirs(output_dir, exist_ok=True)
     
-    frame_idx = 10
+    frame_idx = 60
     
     # 1. Load sample prediction and point cloud
     pred_path = os.path.join(pred_dir, f"{frame_idx:010d}.feather")
@@ -129,7 +129,7 @@ def main():
     is_valid = df['is_valid'].values
     flow = df[['flow_tx_m', 'flow_ty_m', 'flow_tz_m']].values
     
-    output_file = os.path.join(viz_dir, "zeroflow_plotly_viz.html")
+    output_file = os.path.join(output_dir, "zeroflow_plotly_viz.html")
     
     draw_scenes_plotly(
         points=pc,
