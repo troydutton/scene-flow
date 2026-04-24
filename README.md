@@ -4,8 +4,6 @@ Object-aware 3D scene flow on Waymo: we **enforce rigid motion per 3D bounding b
 
 We validate this in a four-phase ablation study that incrementally swaps ground-truth (GT) components for predicted ones (ZeroFlow predictions + CenterPoint detections), isolating the contribution of each component.
 
-See [`SUMMARY.md`](SUMMARY.md) for the full project writeup, methods, and results.
-
 ---
 
 ## Contents
