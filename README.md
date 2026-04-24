@@ -1,4 +1,6 @@
-# Rigid Scene Flow
+# WAY-MORE
+
+**Waymo-Aware Yields Median-Optimized Rigid Estimation**
 
 Object-aware 3D scene flow on Waymo: we **enforce rigid motion per 3D bounding box** to correct the "jelly effect" — the physically impossible per-point flow inconsistency produced by naive learned models such as ZeroFlow. A deterministic post-processing step pools all per-point flow vectors inside each box into a single representative translation (or full rigid transform), then broadcasts that result back.
 
